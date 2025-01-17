@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>视频时间记录器</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      text-align: center;
+    }
+    video {
+      width: 80%;
+      max-width: 800px;
+      margin: 20px 0;
+    }
+    button, input {
+      padding: 10px 20px;
+      margin: 10px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    table {
+      width: 80%;
+      margin: 20px auto;
+      border-collapse: collapse;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 10px;
+      text-align: center;
+    }
+    th {
+      background-color: #f4f4f4;
+    }
+    td.editable {
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>视频时间记录器</h1>
+  
+  <!-- 视频选择器 -->
+  <input type="file" id="fileInput">
+  <br>
+  
+  <!-- 视频播放器 -->
+  <video id="videoPlayer" controls>
+    您的浏览器不支持 HTML5 视频标签。
+  </video>
+  <br>
+  
+  <!-- 功能按钮 -->
+  <button id="playPauseButton" disabled>播放</button>
+  <button id="recordButton" disabled>记录时间</button>
+  <button id="exportButton" disabled>导出为 CSV</button>
+  <!-- <button id="clipButton" disabled>剪辑视频</button> -->
+
+  
+  <h2>记录的时间：</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>序号</th>
+        <th>时间类型</th>
+        <th>显示时间 (HH:MM:SS)</th>
+        <th>备注</th>
+      </tr>
+    </thead>
+    <tbody id="timestampsTable"></tbody>
+  </table>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const videoPlayer = document.getElementById('videoPlayer');
+    const playPauseButton = document.getElementById('playPauseButton');
+    const recordButton = document.getElementById('recordButton');
+    //const clipButton = document.getElementById('clipButton');
+    const exportButton = document.getElementById('exportButton');
+    const timestampsTable = document.getElementById('timestampsTable');
+
+    let timestamps = [];
+    let recordCount = 0;
+    let isStartTime = true;
+    let uploadedFileName = "";
+    let videoFilePath = "";
+
+    // 处理文件选择
+    fileInput.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (file) {
+        const fileURL = URL.createObjectURL(file);
+        videoPlayer.src = fileURL;
+        playPauseButton.disabled = false;
+        recordButton.disabled = false;
+        // clipButton.disabled = false;
+        exportButton.disabled = false;
+      }
+    });
+
+    // 播放或暂停视频
+    playPauseButton.addEventListener('click', () => {
+      if (videoPlayer.paused) {
+        videoPlayer.play();
+      } else {
+        videoPlayer.pause();
+      }
+    });
+
+    // 更新播放/暂停按钮文本
+    videoPlayer.addEventListener('play', () => {
+      playPauseButton.textContent = '暂停';
+    });
+
+    videoPlayer.addEventListener('pause', () => {
+      playPauseButton.textContent = '播放';
+    });
+
+    // 记录时间戳
+    recordButton.addEventListener('click', () => {
+      const currentTime = videoPlayer.currentTime;
+      const formattedTime = formatTime(currentTime);
+      recordCount++;
+      const timeType = isStartTime ? "开始时间" : "结束时间";
+      timestamps.push({ type: timeType, timestamp: currentTime, note: "" });
+
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td>${recordCount}</td>
+        <td>${timeType}</td>
+        <td>${formattedTime}</td>
+        <td class="editable" contenteditable="true"></td>
+      `;
+      timestampsTable.appendChild(row);
+      isStartTime = !isStartTime;
+    });
+
+    // 导出记录为 CSV 文件
+    exportButton.addEventListener('click', () => {
+      if (timestamps.length === 0) {
+        alert("没有记录可导出！");
+        return;
+      }
+
+      const csvContent = "data:text/csv;charset=utf-8," +
+        "时间类型,时间戳（秒）,备注\n" +
+        timestamps.map((row, index) => {
+          const rowNote = document.querySelectorAll("td.editable")[index]?.innerText || "";
+          return `${row.type},${row.timestamp.toFixed(2)},${rowNote}`;
+        }).join("\n");
+
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "时间记录.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    });
+
+    // 剪辑视频
+    clipButton.addEventListener('click', () => {
+      if (!fileInput.files[0]) {
+        alert("请先选择视频文件！");
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+
+      // 上传视频到服务器
+      fetch('http://localhost:5000/hello', {
+        method: 'GET',
+// # 使用 no-cors 模式，但可能会丢失响应数据
+        // body: formData,
+        timeout: 60000  // 设置请求超时为 60 秒
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.file_path) {
+          videoFilePath = data.file_path;
+
+          // 发送剪辑请求
+          fetch('http://localhost:5000/clip', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              videoFile: videoFilePath,
+              timestamps: timestamps,
+            })
+          })
+          .then(response => response.json())
+          .then(data => {
+            alert('视频剪辑完成！');
+          })
+          .catch(() => {
+            alert('剪辑失败1');
+          });
+        } else {
+          alert('上传失败2');
+        }
+      })
+      .catch(() => {
+        console.error('上传失败3:');        
+      });
+    });
+
+    function formatTime(seconds) {
+      const hrs = Math.floor(seconds / 3600);
+      const mins = Math.floor((seconds % 3600) / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+  </script>
+</body>
+</html>
