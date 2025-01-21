@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>视频时间记录器</title>
+  <title>视频时间记录器与剪辑</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -21,82 +21,154 @@
       font-size: 16px;
       cursor: pointer;
     }
-    table {
+    button:disabled {
+      background-color: #e0e0e0;
+      color: #aaa;
+      cursor: not-allowed;
+      border: 1px solid #ccc;
+    }
+    button:disabled:hover {
+      background-color: #e0e0e0;
+    }
+
+    .table-container {
       width: 80%;
       margin: 20px auto;
+      max-height: 300px;  /* 固定表格高度 */
+      overflow-y: auto;   /* 超出部分显示滚动条 */
+    }
+
+    table {
+      width: 100%;  
+      margin: 0;
       border-collapse: collapse;
     }
+  
     th, td {
       border: 1px solid #ccc;
       padding: 10px;
       text-align: center;
     }
+
     th {
       background-color: #f4f4f4;
     }
+
     td.editable {
       cursor: pointer;
+    }
+
+    .loading {
+      color: #555;
+      font-size: 14px;
+    }
+
+    progress {
+      display: block;
+      margin: 20px auto;
+      width: 80%;
     }
   </style>
 </head>
 <body>
-  <h1>视频时间记录器</h1>
-  
+  <h1>视频时间记录器与剪辑工具</h1>
+
   <!-- 视频选择器 -->
-  <input type="file" id="fileInput">
+  <input type="file" id="fileInput" accept="video/*">
   <br>
-  
+
   <!-- 视频播放器 -->
   <video id="videoPlayer" controls>
     您的浏览器不支持 HTML5 视频标签。
   </video>
   <br>
-  
+
   <!-- 功能按钮 -->
   <button id="playPauseButton" disabled>播放</button>
-  <button id="recordButton" disabled>记录时间</button>
-  <button id="exportButton" disabled>导出为 CSV</button>
-  <!-- <button id="clipButton" disabled>剪辑视频</button> -->
+  <button id="recordButton" disabled>记录开始时间</button>
+  <button id="uploadButton" disabled>上传并剪辑</button>
+
+
+  <!-- 状态指示和进度条 -->
+  <p id="statusMessage" class="loading"></p>
+  <progress id="uploadProgress" value="0" max="100" style="width: 80%; display: none;"></progress>
 
   
   <h2>记录的时间：</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>序号</th>
-        <th>时间类型</th>
-        <th>显示时间 (HH:MM:SS)</th>
-        <th>备注</th>
-      </tr>
-    </thead>
-    <tbody id="timestampsTable"></tbody>
-  </table>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>序号</th>
+          <th>时间类型</th>
+          <th>显示时间 (HH:MM:SS:SSS)</th>
+          <th>备注</th>
+          <th>操作</th> 
+        </tr>
+      </thead>
+      <tbody id="timestampsTable"></tbody>
+    </table>
+  </div>
 
   <script>
     const fileInput = document.getElementById('fileInput');
     const videoPlayer = document.getElementById('videoPlayer');
     const playPauseButton = document.getElementById('playPauseButton');
     const recordButton = document.getElementById('recordButton');
-    //const clipButton = document.getElementById('clipButton');
-    const exportButton = document.getElementById('exportButton');
+    const uploadButton = document.getElementById('uploadButton');
     const timestampsTable = document.getElementById('timestampsTable');
+    const statusMessage = document.getElementById('statusMessage');
 
     let timestamps = [];
-    let recordCount = 0;
     let isStartTime = true;
-    let uploadedFileName = "";
-    let videoFilePath = "";
+    let isRecording = false;  // 用来防止按钮被连续点击
 
-    // 处理文件选择
+    // 更新状态消息
+    function setStatus(message, isError = false, csvFile = null) {
+      statusMessage.textContent = message;
+      statusMessage.style.color = isError ? 'red' : '#555';   
+
+      if (csvFile) {
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(csvFile); // 占位符链接
+        link.download = 'time_data.csv';
+        link.textContent = '点击这里下载CSV文件';
+        link.style.marginLeft = '10px'; // 添加一些间距
+        link.addEventListener('click', (event) => {
+          event.preventDefault(); // 阻止默认的链接跳转行为
+          downloadCsvFile(csvFile); // 调用下载CSV文件的函数
+        });
+        statusMessage.appendChild(link);          
+      }      
+    }
+
+    // 格式化时间（包含毫秒）
+    function formatTime(seconds) {
+      const hrs = Math.floor(seconds / 3600);
+      const mins = Math.floor((seconds % 3600) / 60);
+      const secs = Math.floor(seconds % 60);
+      const ms = Math.floor((seconds % 1) * 1000); // 获取毫秒部分
+      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}:${ms.toString().padStart(3, '0')}`;
+    }
+
+    // 初始化按钮状态
+    function enableControls() {
+      playPauseButton.disabled = false;
+      recordButton.disabled = false;
+      uploadButton.disabled = false;
+    }
+
+    // 处理视频文件选择
     fileInput.addEventListener('change', (event) => {
       const file = event.target.files[0];
       if (file) {
         const fileURL = URL.createObjectURL(file);
         videoPlayer.src = fileURL;
-        playPauseButton.disabled = false;
-        recordButton.disabled = false;
-        // clipButton.disabled = false;
-        exportButton.disabled = false;
+        videoPlayer.oncanplaythrough = () => {
+          enableControls();
+          setStatus('');
+        };
+        setStatus('视频加载中...', false);
       }
     });
 
@@ -120,101 +192,195 @@
 
     // 记录时间戳
     recordButton.addEventListener('click', () => {
+      if (isRecording) return;  // 防止按钮快速点击
+      isRecording = true;  // 禁用按钮点击
+
       const currentTime = videoPlayer.currentTime;
       const formattedTime = formatTime(currentTime);
-      recordCount++;
       const timeType = isStartTime ? "开始时间" : "结束时间";
-      timestamps.push({ type: timeType, timestamp: currentTime, note: "" });
+      timestamps.push({sn:timestamps.length + 1, type: timeType, timestamp: currentTime, note: "" });
 
       const row = document.createElement('tr');
       row.innerHTML = `
-        <td>${recordCount}</td>
+        <td>${timestamps.length}</td>
         <td>${timeType}</td>
-        <td>${formattedTime}</td>
+        <td class="editable" contenteditable="true">${formattedTime}</td>
         <td class="editable" contenteditable="true"></td>
+        <td>${!isStartTime ? `<button class="previewButton">预览</button>` : ''}</td>
       `;
-      timestampsTable.appendChild(row);
+
+      // 将新行插入到表格的顶部
+      timestampsTable.insertBefore(row, timestampsTable.firstChild);
+      // 将新行插入到表格的末尾
+      // timestampsTable.appendChild(row);
       isStartTime = !isStartTime;
+
+      // 更新按钮文本
+      recordButton.textContent = isStartTime ? "记录开始时间" : "记录结束时间";
+
+      // 防止按钮快速点击：延迟启用按钮
+      setTimeout(() => {
+        isRecording = false;  // 允许下一次点击
+      }, 1000);  // 设置防抖延迟时间为 1000ms
     });
 
-    // 导出记录为 CSV 文件
-    exportButton.addEventListener('click', () => {
-      if (timestamps.length === 0) {
-        alert("没有记录可导出！");
+    // 监听表格编辑事件，更新 timestamps 数组并同步备注
+    timestampsTable.addEventListener('input', (event) => {
+      if (event.target.classList.contains('editable')) {
+        const displayRowIndex = event.target.closest('tr').rowIndex - 1; // 获取行索引
+      
+        const columnIndex = event.target.cellIndex;
+        
+        const displayRow = event.target.closest('tr'); // 获取当前行
+        const sequenceCell = displayRow.cells[0]; // 假设序号在第 1 列
+        const sequenceNumber = parseInt(sequenceCell.textContent, 10); // 提取并解析为整数
+
+        const dataIndex = sequenceNumber - 1; // 当前索引
+        
+
+        if (columnIndex === 2) { // 时间列
+          timestamps[dataIndex].timestamp = parseTime(event.target.innerText);
+        } else if (columnIndex === 3) { // 备注列
+          const newNote = event.target.innerText;
+          timestamps[dataIndex].note = newNote;
+
+          // 如果是开始时间的备注，更新对应的结束时间备注
+          if (timestamps[dataIndex].type === "开始时间" && dataIndex + 1 < timestamps.length && timestamps[dataIndex + 1].type === "结束时间") {
+            timestamps[dataIndex + 1].note = newNote;
+            const endNoteCell = timestampsTable.rows[displayRowIndex - 1].cells[3];
+            endNoteCell.innerText = newNote;
+          }
+
+          // 如果是结束时间的备注，更新对应的开始时间备注
+          if (timestamps[dataIndex].type === "结束时间" && dataIndex - 1 >= 0 && timestamps[dataIndex - 1].type === "开始时间") {
+            timestamps[dataIndex - 1].note = newNote;
+            const startNoteCell = timestampsTable.rows[displayRowIndex + 1].cells[3];
+            startNoteCell.innerText = newNote;
+          }
+        }
+      }
+    });
+
+    // 时间字符串转换为秒
+    function parseTime(timeString) {
+      const parts = timeString.split(':');
+      if (parts.length === 4) {
+        return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]) + parseInt(parts[3]) / 1000;
+      }
+      return 0;
+    }
+
+    // 上传并剪辑
+    uploadButton.addEventListener('click', () => {
+      const videoFile = fileInput.files[0];
+      if (!videoFile) {
+        setStatus('请先选择视频文件！', true);
         return;
       }
 
-      const csvContent = "data:text/csv;charset=utf-8," +
-        "时间类型,时间戳（秒）,备注\n" +
+      if (timestamps.length === 0) {
+        setStatus('请先记录时间数据！', true);
+        return;
+      }
+
+      setStatus('正在上传，请稍候...');
+      const uploadProgress = document.getElementById('uploadProgress');
+      uploadProgress.style.display = 'block'; // 显示进度条
+      uploadProgress.value = 0; // 初始化进度
+
+      // 生成 CSV 文件内容
+      const csvContent = "序号,时间类型,时间戳（秒）,备注\n" +
         timestamps.map((row, index) => {
-          const rowNote = document.querySelectorAll("td.editable")[index]?.innerText || "";
-          return `${row.type},${row.timestamp.toFixed(2)},${rowNote}`;
+          const rowNote = document.querySelectorAll("td.editable")[index * 2 + 1]?.innerText || "";
+          return `${index+1},${row.type},${row.timestamp.toFixed(3)},${rowNote}`;
         }).join("\n");
 
-      const encodedUri = encodeURI(csvContent);
-      const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", "时间记录.csv");
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    });
+      // 创建 Blob 对象作为临时 CSV 文件
+      const csvBlob = new Blob([csvContent], { type: 'text/csv' });
+      const csvFile = new File([csvBlob], 'time_data.csv', { type: 'text/csv' });
 
-    // 剪辑视频
-    clipButton.addEventListener('click', () => {
-      if (!fileInput.files[0]) {
-        alert("请先选择视频文件！");
-        return;
-      }
-
+      // 构建 FormData 对象
       const formData = new FormData();
-      formData.append('file', fileInput.files[0]);
+      formData.append('videoFile', videoFile);
+      formData.append('csvFile', csvFile);
 
-      // 上传视频到服务器
-      fetch('http://localhost:5000/hello', {
-        method: 'GET',
-// # 使用 no-cors 模式，但可能会丢失响应数据
-        // body: formData,
-        timeout: 60000  // 设置请求超时为 60 秒
-      })
-      .then(response => response.json())
-      .then(data => {
-        if (data.file_path) {
-          videoFilePath = data.file_path;
+      // 使用 XMLHttpRequest 上传文件并监听进度
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', 'http://localhost:5000/upload', true);
 
-          // 发送剪辑请求
-          fetch('http://localhost:5000/clip', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              videoFile: videoFilePath,
-              timestamps: timestamps,
-            })
-          })
-          .then(response => response.json())
-          .then(data => {
-            alert('视频剪辑完成！');
-          })
-          .catch(() => {
-            alert('剪辑失败1');
-          });
-        } else {
-          alert('上传失败2');
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = (event.loaded / event.total) * 100;
+          uploadProgress.value = percentComplete;
         }
-      })
-      .catch(() => {
-        console.error('上传失败3:');        
-      });
+      };
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          const response = JSON.parse(xhr.responseText);
+          setStatus(response.message || '视频剪辑完成！', false, csvFile);
+        } else {
+          setStatus('上传失败，请检查后端服务是否正常运行。', true, csvFile);
+        }
+        uploadProgress.style.display = 'none'; // 隐藏进度条
+      };
+
+      xhr.onerror = () => {
+        setStatus('上传失败，请检查网络连接。', true, csvFile);
+        uploadProgress.style.display = 'none'; // 隐藏进度条
+      };
+
+      xhr.send(formData);
     });
 
-    function formatTime(seconds) {
-      const hrs = Math.floor(seconds / 3600);
-      const mins = Math.floor((seconds % 3600) / 60);
-      const secs = Math.floor(seconds % 60);
-      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
+    function downloadCsvFile(csvFile) {
+      // 创建一个下载链接
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(csvFile);
+      link.download = 'time_data.csv';
+
+      // 模拟点击下载链接
+      link.click();
+
+      // 释放 URL 对象
+      URL.revokeObjectURL(link.href);
+    };
+
+    timestampsTable.addEventListener('click', (event) => {
+      if (event.target.classList.contains('previewButton')) {
+        
+        const row = event.target.closest('tr'); // 获取当前行
+        const sequenceCell = row.cells[0]; // 假设序号在第 1 列
+        const sequenceNumber = parseInt(sequenceCell.textContent, 10); // 提取并解析为整数
+
+        const endIndex = sequenceNumber - 1; // 开始时间在上一行
+        const startIndex = endIndex - 1; // 结束时间在当前行
+
+        if (isNaN(startIndex) || isNaN(endIndex) || startIndex < 0 || endIndex >= timestamps.length) {
+          console.error('无效的索引');
+          return;
+        }
+
+        if (timestamps[startIndex].type === '开始时间' && timestamps[endIndex].type === '结束时间') {
+          const startTime = timestamps[startIndex].timestamp;
+          const endTime = timestamps[endIndex].timestamp;
+
+          // 设置视频播放范围
+          videoPlayer.currentTime = startTime;
+          videoPlayer.play();
+
+          // 停止播放到结束时间
+          const stopPlayback = () => {
+            if (videoPlayer.currentTime >= endTime) {
+              videoPlayer.pause();
+              videoPlayer.removeEventListener('timeupdate', stopPlayback);
+            }
+          };
+          videoPlayer.addEventListener('timeupdate', stopPlayback);
+        }
+      }
+    });
+
+
   </script>
 </body>
 </html>
