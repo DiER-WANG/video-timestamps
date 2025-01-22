@@ -291,8 +291,7 @@
       // 生成 CSV 文件内容
       const csvContent = "序号,时间类型,时间戳（秒）,备注\n" +
         timestamps.map((row, index) => {
-          const rowNote = document.querySelectorAll("td.editable")[index * 2 + 1]?.innerText || "";
-          return `${index+1},${row.type},${row.timestamp.toFixed(3)},${rowNote}`;
+          return `${index+1},${row.type},${row.timestamp.toFixed(3)},${row.note || ""}`;
         }).join("\n");
 
       // 创建 Blob 对象作为临时 CSV 文件
