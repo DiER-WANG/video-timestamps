@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>视频时间记录器与剪辑</title>
+  <title>cutime</title>
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.10.1/dist/ffmpeg.min.js"></script>
+  <!-- 移除其他不需要的 FFmpeg 相关脚本 -->
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -68,10 +70,53 @@
       margin: 20px auto;
       width: 80%;
     }
+
+    .toast {
+      visibility: hidden;
+      min-width: 250px;
+      margin-left: -125px;
+      background-color: #333;
+      color: #fff;
+      text-align: center;
+      border-radius: 2px;
+      padding: 16px;
+      position: fixed;
+      z-index: 1;
+      left: 50%;
+      bottom: 30px;
+      font-size: 17px;
+    }
+
+    .toast.show {
+      visibility: visible;
+      -webkit-animation: fadein 0.5s, fadeout 0.5s 2.5s;
+      animation: fadein 0.5s, fadeout 0.5s 2.5s;
+    }
+
+    @-webkit-keyframes fadein {
+      from {bottom: 0; opacity: 0;}
+      to {bottom: 30px; opacity: 1;}
+    }
+
+    @keyframes fadein {
+      from {bottom: 0; opacity: 0;}
+      to {bottom: 30px; opacity: 1;}
+    }
+
+    @-webkit-keyframes fadeout {
+      from {bottom: 30px; opacity: 1;}
+      to {bottom: 0; opacity: 0;}
+    }
+
+    @keyframes fadeout {
+      from {bottom: 30px; opacity: 1;}
+      to {bottom: 0; opacity: 0;}
+    }
+
   </style>
 </head>
 <body>
-  <h1>视频时间记录器与剪辑工具</h1>
+  <h1>cutime</h1>
 
   <!-- 视频选择器 -->
   <input type="file" id="fileInput" accept="video/*">
@@ -109,13 +154,15 @@
           <th>序号</th>
           <th>开始时间</th>
           <th>结束时间</th>
-          <th>备注</th>
+          <th>分组</th>
           <th>操作</th> 
         </tr>
       </thead>
       <tbody id="timestampsTable"></tbody>
     </table>
   </div>
+
+  <div id="toast" class="toast">这是一个 Toast 提示</div>
 
   <script>
     const fileInput = document.getElementById('fileInput');
@@ -130,13 +177,52 @@
     let isRecording = false;  // 用来防止按钮被连续点击
     let isStartTime = true;
     let cutOrderMode = true;
+    let isUploading = false;
+    let ffmpeg = null;
+
+    // 初始化 FFmpeg
+    async function initFFmpeg() {
+      if (!ffmpeg) {
+        ffmpeg = new FFmpeg.createFFmpeg({
+          log: true,
+          progress: ({ ratio }) => {
+            const uploadProgress = document.getElementById('uploadProgress');
+            if (ratio) {
+              uploadProgress.value = Math.min(ratio * 100, 100);
+            }
+          },
+        });
+        try {
+          await ffmpeg.load();
+          console.log('FFmpeg 加载成功');
+        } catch (error) {
+          console.error('FFmpeg 加载失败:', error);
+          throw error;
+        }
+      }
+      return ffmpeg;
+    }
+
     recordButton.textContent = cutOrderMode?"增加记录": "记录开始时间";
 
-    // 更新状态消息
-    function setStatus(message, isError = false, csvFile = null) {
-      statusMessage.textContent = message;
-      statusMessage.style.color = isError ? 'red' : '#555';   
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.className = 'toast show';
+      setTimeout(() => {
+        toast.className = toast.className.replace('show', '');
+      }, 3000);
+    }
 
+    // 更新状态消息
+    function setStatus(message, isError = false, csvFile = null, isHtml = false) {
+      if (isHtml) {
+        statusMessage.innerHTML = message;
+      } else {
+        statusMessage.textContent = message;  
+      }
+      
+      statusMessage.style.color = isError ? 'red' : '#555';
       if (csvFile) {
         const link = document.createElement('a');
         link.href = URL.createObjectURL(csvFile); // 占位符链接
@@ -148,7 +234,7 @@
           downloadCsvFile(csvFile); // 调用下载CSV文件的函数
         });
         statusMessage.appendChild(link);          
-      }      
+      }    
     }
 
     // 格式化时间（不包含毫秒）
@@ -217,7 +303,7 @@
         const defaultInterval = 8; // 默认-8
         
         const fromTime = Math.max(0, currentTime-defaultInterval);        
-        timestamps.push({sn:timestamps.length + 1, from: fromTime, to: currentTime, note: "" });
+        timestamps.push({sn:timestamps.length + 1, from: fromTime, to: currentTime, group: "" });
 
         const to = formatTime(currentTime);
         const from = formatTime(fromTime);       
@@ -236,7 +322,7 @@
       } else {
         if (isStartTime) {
           
-          timestamps.push({sn:timestamps.length + 1, from: currentTime, to:0,  note: "" });
+          timestamps.push({sn:timestamps.length + 1, from: currentTime, to:0,  group: "" });
 
           const from = formatTime(currentTime);                
           const row = document.createElement('tr');
@@ -267,7 +353,7 @@
       }, 1000);  // 设置防抖延迟时间为 1000ms
     });
 
-    // 监听表格编辑事件，更新 timestamps 数组并同步备注
+    // 监听表格编辑事件，更新 timestamps 数组并同步分组
     timestampsTable.addEventListener('input', (event) => {
       if (event.target.classList.contains('editable')) {
         const displayRowIndex = event.target.closest('tr').rowIndex - 1; // 获取行索引
@@ -284,9 +370,9 @@
           timestamps[dataIndex].from = parseTime(event.target.innerText);
         } else if (columnIndex === 2) { // 结束时间列
           timestamps[dataIndex].to = parseTime(event.target.innerText);
-        } else if (columnIndex === 3) { // 备注列
-          const newNote = event.target.innerText;
-          timestamps[dataIndex].note = newNote;
+        } else if (columnIndex === 3) { // 分组列
+          const newgroup = event.target.innerText;
+          timestamps[dataIndex].group = newgroup;
         }
       }
     });
@@ -300,8 +386,13 @@
       return 0;
     }
 
-    // 上传并剪辑
-    uploadButton.addEventListener('click', () => {
+    // 剪辑视频
+    uploadButton.addEventListener('click', async () => {
+      if (isUploading) {  
+        showToast('处理中，请稍候...');
+        return;
+      }
+
       const videoFile = fileInput.files[0];
       if (!videoFile) {
         setStatus('请先选择视频文件！', true);
@@ -313,52 +404,93 @@
         return;
       }
 
-      setStatus('正在上传，请稍候...');
+      isUploading = true;
+      setStatus('正在处理视频，请稍候...');
       const uploadProgress = document.getElementById('uploadProgress');
-      uploadProgress.style.display = 'block'; // 显示进度条
-      uploadProgress.value = 0; // 初始化进度
+      uploadProgress.style.display = 'block';
+      uploadProgress.value = 0;
 
-      // 生成 CSV 文件内容
-      const csvContent = "序号,开始时间,结束时间,备注\n" +
-        timestamps.map((row, index) => {
-          return `${index+1},${Math.floor(row.from)},${Math.floor(row.to)},${row.note || ""}`;
-        }).join("\n");
+      try {
+        // 初始化 FFmpeg
+        await initFFmpeg();
+        
+        // 读取视频文件
+        const videoData = await videoFile.arrayBuffer();
+        ffmpeg.writeFile('input.mp4', new Uint8Array(videoData));
 
-      // 创建 Blob 对象作为临时 CSV 文件
-      const csvBlob = new Blob([csvContent], { type: 'text/csv' });
-      const csvFile = new File([csvBlob], 'time_data.csv', { type: 'text/csv' });
+        // 首先将输入视频转换为 mp4 格式
+        await ffmpeg.exec([
+          '-i', 'input.mp4',
+          '-c:v', 'libx264',
+          '-preset', 'medium',
+          '-c:a', 'aac',
+          'converted.mp4'
+        ]);
 
-      // 构建 FormData 对象
-      const formData = new FormData();
-      formData.append('videoFile', videoFile);
-      formData.append('csvFile', csvFile);
-
-      // 使用 XMLHttpRequest 上传文件并监听进度
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', 'http://localhost:5000/upload', true);
-
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const percentComplete = (event.loaded / event.total) * 100;
-          uploadProgress.value = percentComplete;
+        // 按时间戳剪辑视频片段
+        const clips = [];
+        for (let i = 0; i < timestamps.length; i++) {
+          const { from, to } = timestamps[i];
+          const outputName = `clip_${i}.mp4`;
+          
+          try {
+            await ffmpeg.exec([
+              '-i', 'converted.mp4',
+              '-ss', from.toString(),
+              '-to', to.toString(),
+              '-c:v', 'copy',
+              '-c:a', 'copy',
+              outputName
+            ]);
+            
+            clips.push(outputName);
+            uploadProgress.value = (i + 1) / timestamps.length * 50;
+          } catch (clipError) {
+            console.error(`剪辑片段 ${i} 失败:`, clipError);
+            showToast(`剪辑片段 ${i} 失败`);
+          }
         }
-      };
-      xhr.onload = () => {
-        if (xhr.status === 200) {
-          const response = JSON.parse(xhr.responseText);
-          setStatus(response.message || '视频剪辑完成！', false, csvFile);
-        } else {
-          setStatus('上传失败，请检查后端服务是否正常运行。', true, csvFile);
+
+        // 创建片段列表文件
+        const listContent = clips.map(clip => `file '${clip}'`).join('\n');
+        ffmpeg.writeFile('list.txt', listContent);
+
+        // 合并所有片段
+        await ffmpeg.exec([
+          '-f', 'concat',
+          '-safe', '0',
+          '-i', 'list.txt',
+          '-c', 'copy',
+          'output.mp4'
+        ]);
+
+        uploadProgress.value = 75;
+
+        // 读取输出文件
+        const outputData = await ffmpeg.readFile('output.mp4');
+        const outputBlob = new Blob([outputData.buffer], { type: 'video/mp4' });
+
+        // 创建下载链接
+        const downloadUrl = URL.createObjectURL(outputBlob);
+        const message = `视频处理完成 <a href="${downloadUrl}" download="cutime_output.mp4">点击下载</a>`;
+        setStatus(message, false, null, true);
+
+        // 清理临时文件
+        for (const clip of clips) {
+          await ffmpeg.deleteFile(clip);
         }
-        uploadProgress.style.display = 'none'; // 隐藏进度条
-      };
+        await ffmpeg.deleteFile('input.mp4');
+        await ffmpeg.deleteFile('converted.mp4');
+        await ffmpeg.deleteFile('list.txt');
+        await ffmpeg.deleteFile('output.mp4');
 
-      xhr.onerror = () => {
-        setStatus('上传失败，请检查网络连接。', true, csvFile);
-        uploadProgress.style.display = 'none'; // 隐藏进度条
-      };
-
-      xhr.send(formData);
+      } catch (error) {
+        console.error('视频处理错误:', error);
+        setStatus(`视频处理失败: ${error.message}`, true);
+      } finally {
+        isUploading = false;
+        uploadProgress.style.display = 'none';
+      }
     });
 
     function downloadCsvFile(csvFile) {
