@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>cutime</title>
-  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.10.1/dist/ffmpeg.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/ffmpeg.min.js"></script>
   <!-- 移除其他不需要的 FFmpeg 相关脚本 -->
   <style>
     body {
@@ -182,27 +182,28 @@
 
     // 初始化 FFmpeg
     async function initFFmpeg() {
-      if (!ffmpeg) {
-        ffmpeg = new FFmpeg.createFFmpeg({
-          log: true,
-          progress: ({ ratio }) => {
-            const uploadProgress = document.getElementById('uploadProgress');
-            if (ratio) {
-              uploadProgress.value = Math.min(ratio * 100, 100);
-            }
-          },
-        });
-        try {
-          await ffmpeg.load();
-          console.log('FFmpeg 加载成功');
-        } catch (error) {
-          console.error('FFmpeg 加载失败:', error);
-          throw error;
-        }
+    if (!ffmpeg) {
+      const { createFFmpeg } = FFmpeg;
+      ffmpeg = createFFmpeg({
+        log: true,
+        corePath: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js',
+        progress: ({ ratio }) => {
+          const uploadProgress = document.getElementById('uploadProgress');
+          if (ratio) {
+            uploadProgress.value = Math.min(ratio * 100, 100);
+          }
+        },
+      });
+      try {
+        await ffmpeg.load();
+        console.log('FFmpeg 加载成功');
+      } catch (error) {
+        console.error('FFmpeg 加载失败:', error);
+        throw error;
       }
-      return ffmpeg;
     }
-
+    return ffmpeg;
+  }
     recordButton.textContent = cutOrderMode?"增加记录": "记录开始时间";
 
     function showToast(message) {
