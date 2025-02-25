@@ -3,10 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>cutime</title>
-  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.0/dist/ffmpeg.min.js"></script>
-  <script src="https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js"></script>
-  
+  <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin">
+  <meta http-equiv="Cross-Origin-Embedder-Policy" content="require-corp">
+  <title>cutime</title>  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+ <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.0/dist/ffmpeg.min.js"></script>
+ <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js"></script>
+
+  <!-- <script src="./js/ffmpeg-core.js"></script>
+  <script src="./js/ffmpeg.min.js"></script> -->
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -166,6 +171,24 @@
   <div id="toast" class="toast">这是一个 Toast 提示</div>
 
   <script>
+    let ffmpeg;
+    let fetchFile;
+
+    // 等待页面加载完成后初始化 FFmpeg
+    window.addEventListener('load', async () => {
+      const { createFFmpeg, fetchFile: _fetchFile } = FFmpeg;
+      ffmpeg = createFFmpeg({ log: true });
+      fetchFile = _fetchFile;
+
+      try {
+        await ffmpeg.load();
+        console.log('FFmpeg 加载成功');
+      } catch (err) {
+        console.error('FFmpeg 加载失败:', err);
+        alert('FFmpeg 加载失败，请检查浏览器兼容性');
+      }
+    });
+
     const fileInput = document.getElementById('fileInput');
     const videoPlayer = document.getElementById('videoPlayer');
     const playPauseButton = document.getElementById('playPauseButton');
@@ -173,19 +196,6 @@
     const uploadButton = document.getElementById('uploadButton');
     const timestampsTable = document.getElementById('timestampsTable');
     const statusMessage = document.getElementById('statusMessage');
-
-    const {createFFmpeg, fetchFile} = FFmpeg;
-    const ffmpeg = createFFmpeg({ log: true });
-
-    // 初始化 FFmpeg
-    (async () => {
-      try {
-        await ffmpeg.load();
-      } catch (err) {
-        console.error('FFmpeg 加载失败:', err);
-        alert('FFmpeg 加载失败，请检查浏览器兼容性');
-      }
-    })();
 
     let timestamps = [];
     let isRecording = false;  // 用来防止按钮被连续点击
@@ -344,7 +354,7 @@
     });
 
     // 监听表格编辑事件，更新 timestamps 数组并同步分组
-    timestampsTable.addEventListener('input', (event) => {
+    timestampsTable.addEventListener('input', async (event) => {
       if (event.target.classList.contains('editable')) {
         const displayRowIndex = event.target.closest('tr').rowIndex - 1; // 获取行索引
       
@@ -378,8 +388,9 @@
 
     // 上传并剪辑
     uploadButton.addEventListener('click', async () => {
+
       if (isUploading) {  
-        showToast('处理中，请稍候...');
+        showToast('上传中，请稍候...');
         return;
       }
 
@@ -395,100 +406,192 @@
       }
 
       isUploading = true;
-      setStatus('正在处理视频，请稍候...');
+
+      setStatus('正在上传，请稍候...');
       const uploadProgress = document.getElementById('uploadProgress');
-      uploadProgress.style.display = 'block';
-      uploadProgress.value = 0;
+      uploadProgress.style.display = 'block'; // 显示进度条
+      uploadProgress.value = 0; // 初始化进度
 
-      try {
-        // 读取视频文件
-        const videoData = await fetchFile(videoFile);
-        
-        // 写入视频文件到 MEMFS
-        ffmpeg.FS('writeFile', 'input.mp4', videoData);
-        
-        // 按时间戳切分视频
-        const outputFiles = [];
-        for (let i = 0; i < timestamps.length; i++) {
-          const {from, to, group} = timestamps[i];
-          const duration = to - from;
-          const outputName = `output_${i}.mp4`;
+      if (true) {
+        try {
+          // 读取视频文件
+          const videoData = await fetchFile(videoFile);
           
-          // 使用 ffmpeg 切分视频
-          await ffmpeg.run(
-            '-ss', `${from}`,
-            '-i', 'input.mp4',
-            '-t', `${duration}`,
-            '-c', 'copy',
-            outputName
-          );
+          // 写入视频文件到 MEMFS
+          ffmpeg.FS('writeFile', 'input.mp4', videoData);
           
-          outputFiles.push({
-            name: outputName,
-            group: group
+          // 按时间戳切分视频
+          const outputFiles = [];
+          for (let i = 0; i < timestamps.length; i++) {
+            const {sn, from, to, group} = timestamps[i];
+            const duration = to - from;
+            const outputName = `output_${sn}.mp4`;
+            
+            // 使用 ffmpeg 切分视频
+            await ffmpeg.run(
+              '-ss', `${from}`,
+              '-to', `${to}`,
+              '-i', 'input.mp4',              
+              '-c:v', 'libx264',  // 使用 H.264 编码
+              '-c:a', 'aac',      // 使用 AAC 音频编码
+              '-preset', 'ultrafast', // 使用最快的编码速度
+              outputName
+            );
+            
+            outputFiles.push({
+              name: outputName,
+              group: group,
+              from: from,
+              to: to
+            });
+            
+            // 更新进度
+            uploadProgress.value = ((i + 1) / timestamps.length) * 100;
+          }
+
+          // 按分组合并视频
+          const groups = {};
+          outputFiles.forEach(file => {
+            // 支持以英文逗号分隔的多个分组
+            const groupNames = file.group ? file.group.split(',').map(g => g.trim()) : ['default'];
+            groupNames.forEach(group => {
+              if (!groups[group]) groups[group] = [];
+              groups[group].push(file);
+            });
           });
-          
-          // 更新进度
-          uploadProgress.value = ((i + 1) / timestamps.length) * 100;
-        }
 
-        // 按分组合并视频
-        const groups = {};
-        outputFiles.forEach(file => {
-          const group = file.group || 'default';
-          if (!groups[group]) groups[group] = [];
-          groups[group].push(file.name);
-        });
+          // 创建 JSZip 实例
+          const zip = new JSZip();
 
-        // 为每个分组创建合并文件
-        for (const [group, files] of Object.entries(groups)) {
-          // 创建文件列表
-          const listContent = files.map(f => `file '${f}'`).join('\n');
-          ffmpeg.FS('writeFile', 'list.txt', listContent);
+          // 为每个分组创建文件夹和合并文件
+          for (const [group, files] of Object.entries(groups)) {
+            const groupFolder = zip.folder(group);
 
-          // 合并视频
-          const groupOutput = `merged_${group}.mp4`;
-          await ffmpeg.run(
-            '-f', 'concat',
-            '-safe', '0',
-            '-i', 'list.txt',
-            '-c', 'copy',
-            groupOutput
-          );
+            // 保存单独片段
+            for (const file of files) {
+              const data = ffmpeg.FS('readFile', file.name);
+              const clipName = `clip_${file.from}_${file.to}.mp4`;
+              groupFolder.file(clipName, data);
+            }
 
-          // 下载合并后的视频
-          const data = ffmpeg.FS('readFile', groupOutput);
-          const blob = new Blob([data.buffer], { type: 'video/mp4' });
-          const url = URL.createObjectURL(blob);
-          
+            // 创建文件列表
+            const listContent = files.map(f => `file '${f.name}'`).join('\n');
+            ffmpeg.FS('writeFile', 'list.txt', listContent);
+
+            // 合并视频
+            const groupOutput = `merged_${group}.mp4`;
+            await ffmpeg.run(
+              '-f', 'concat',
+              '-safe', '0',
+              '-i', 'list.txt',
+              '-c:v', 'libx264',  // 使用 H.264 编码
+              '-c:a', 'aac',      // 使用 AAC 音频编码
+              '-preset', 'ultrafast', // 使用最快的编码速度
+              groupOutput
+            );
+
+            // 将合并后的视频添加到对应分组文件夹
+            const mergedData = ffmpeg.FS('readFile', groupOutput);
+            groupFolder.file(`${group}_merged.mp4`, mergedData);
+          }
+
+          // 创建统计数据
+            const stats = {};
+            for (const [group, files] of Object.entries(groups)) {
+              // 只统计单个视频片段，不包括合并后的视频
+              stats[group] = files.length;
+            }
+
+            // 创建统计CSV文件，按照个数降序排序
+            const statsContent = '分组,个数\n' + 
+              Object.entries(stats)
+                .sort(([, a], [, b]) => b - a)  // 按照个数降序排序
+                .map(([group, count]) => `${group},${count}`)
+                .join('\n');
+            zip.file('统计.csv', statsContent);
+
+            // 生成并下载 zip 文件
+          const zipBlob = await zip.generateAsync({type: 'blob'});
+          const zipUrl = URL.createObjectURL(zipBlob);
           const link = document.createElement('a');
-          link.href = url;
-          link.download = `${group || 'default'}_merged.mp4`;
+          link.href = zipUrl;
+          link.download = 'video_clips.zip';
           link.click();
           
           // 清理
-          URL.revokeObjectURL(url);
-        }
+          URL.revokeObjectURL(zipUrl);
 
-        setStatus('视频处理完成！', false);
-      } catch (error) {
-        console.error('处理视频时出错:', error);
-        setStatus('处理视频时出错: ' + error.message, true);
-      } finally {
-        isUploading = false;
-        uploadProgress.style.display = 'none';
-        
-        // 清理 MEMFS
-        try {
-          ffmpeg.FS('unlink', 'input.mp4');
-          ffmpeg.FS('unlink', 'list.txt');
-          timestamps.forEach((_, i) => {
-            ffmpeg.FS('unlink', `output_${i}.mp4`);
-          });
-        } catch (e) {
-          console.error('清理文件时出错:', e);
-        }
+          setStatus('处理完成');
+        } catch (error) {
+          console.error('处理视频时出错:', error);
+          setStatus('处理视频时出错: ' + error.message, true);
+        } finally {
+          isUploading = false;
+          uploadProgress.style.display = 'none';
+          
+          // 清理 MEMFS
+          try {
+            ffmpeg.FS('unlink', 'input.mp4');
+            ffmpeg.FS('unlink', 'list.txt');
+            timestamps.forEach((_, i) => {
+              ffmpeg.FS('unlink', `output_${i}.mp4`);
+            });
+          } catch (e) {
+            console.error('清理文件时出错:', e);
+          }
+        } 
+      } else {
+        // 生成 CSV 文件内容
+        const csvContent = "序号,开始时间,结束时间,分组\n" +
+          timestamps.map((row, index) => {
+            const group = row.group ? `"${row.group.replace(/"/g, '""')}"` : ""; // 用双引号包裹分组，并处理分组中的双引号
+            return `${index+1},${Math.floor(row.from)},${Math.floor(row.to)},${group}`;
+          }).join("\n");
+
+        // 创建 Blob 对象作为临时 CSV 文件
+        const csvBlob = new Blob([csvContent], { type: 'text/csv' });
+        const csvFile = new File([csvBlob], 'time_data.csv', { type: 'text/csv' });
+
+        // 构建 FormData 对象
+        const formData = new FormData();
+        formData.append('videoFile', videoFile);
+        formData.append('csvFile', csvFile);
+
+        // 使用 XMLHttpRequest 上传文件并监听进度
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', 'http://localhost:5000/upload', true);
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percentComplete = (event.loaded / event.total) * 100;
+            uploadProgress.value = percentComplete;
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            const response = JSON.parse(xhr.responseText);          
+            // 使用 sessionId 创建下载页面链接
+            const downloadPageUrl = `download.html?sid=${response.sessionId}`;
+            const message = `${response.message} <a href="${downloadPageUrl}" target="_blank">查看剪辑视频</a>`;
+            setStatus(message, false, null, true);
+            isUploading = false;
+          } else {
+            setStatus('上传失败，请检查后端服务是否正常运行。', true, csvFile);
+            isUploading = false;
+          }
+          uploadProgress.style.display = 'none';        
+        };
+
+        xhr.onerror = () => {
+          setStatus('上传失败，请检查网络连接。', true, csvFile);
+          uploadProgress.style.display = 'none'; // 隐藏进度条
+          isUploading = false;
+        };
+
+        xhr.send(formData);
       }
+
+      
     });
 
     function downloadCsvFile(csvFile) {
